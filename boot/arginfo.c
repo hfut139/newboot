@@ -9,4 +9,13 @@ bool bl_arginfo_init(uint32_t *size,uint32_t *crc)
 {
     uint32_t *arginfo =(uint32_t *)FLASH_ARG_ADDRESS;
     
+    if (arginfo[0]!=ARGINFO_MAGIC)
+    {
+        return false;
+    }
+
+    if(size)
+    {
+        *size=arginfo[1];
+    }
 }
