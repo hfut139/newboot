@@ -5,7 +5,7 @@
 
 #define ARGINFO_MAGIC 0x1A2B3C4D
 
-bool bl_arginfo_init(uint32_t *size,uint32_t *crc)
+bool bl_arginfo_read(uint32_t *size,uint32_t *crc)
 {
     uint32_t *arginfo =(uint32_t *)FLASH_ARG_ADDRESS;
     
@@ -17,5 +17,10 @@ bool bl_arginfo_init(uint32_t *size,uint32_t *crc)
     if(size)
     {
         *size=arginfo[1];
+    }
+
+    if(crc)
+    {
+        *crc=arginfo[2];
     }
 }
