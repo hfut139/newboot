@@ -123,3 +123,163 @@ typedef struct
     uint32_t address;
     uint32_t size;
 }bl_erase_param_t;
+
+//read opcode 的param数据结构
+typedef struct
+{
+    uint32_t address;
+    uint32_t size;
+}bl_read_param_t;
+
+//write opcode 的param数据结构
+typedef struct
+{
+    uint32_t address;
+    uint32_t size;
+    uint8_t data[];
+}bl_write_param_t;
+
+//verify opcode 的param数据结构
+typedef struct
+{
+    uint32_t address;
+    uint32_t size;
+    uint32_t crc;
+}bl_verify_param_t;
+
+//串口接收ringbuffer
+static ringbuffer8_t serial_rb;
+static uint8_t serial_rb_buffer[BL_UART_BUFFER_SIZE];
+static bl_ctrl_t bl_ctrl;
+//上一次接收到数据包的时间，用于数据包接收超时检查
+static uint32_t last_pak_time;
+
+
+
+static void serial_recv_callback(uint8_t *data,uint32_t len)
+{
+    rb8_puts(serial_rb,data,len);
+}
+
+static void bl_reset(bl_ctrl_t *ctrl)
+{
+    ctrl->sm= BL_SM_IDLE;
+    ctrl->rx.index=0;
+    ctrl->pkt.index=0;
+}
+
+static void bl_response(bl_op_t op,uint8_t *data,uint16_t length)
+{
+    const uint8_t head=0xAA;
+
+    uint32_t crc=0;
+    crc=crc32_update(crc,(uint8_t *)&head,1);
+    crc=crc32_update(crc,(uint8_t)&op,1);
+    crc=crc32_update(crc,(uint8_t *)&length,2);
+    crc=crc32_update(crc,data,length);
+
+    bl_uart_write((uint8_t *)&head,1);
+    bl_uart_write((uint8_t *)&op,1);
+    bl_uart_write((uint8_t *)&length,2);
+    bl_uart_write(data,length);
+    bl_uart_write((uint8_t *)&crc,4);
+}
+
+static void bl_response_ack(bl_op_t op,bl_err_t err)
+{
+    bl_response(op,(uint8_t *)&err,1);
+}
+
+static void bl_op_inquiry_handler(uint8_t *data,uint16_t length)
+{
+    log_i("inquery");
+
+    //将param数据强制转换为bl_inquiry_param_t结构体
+    //因为param内的数据就是bl_inquiry_param_t类型
+    bl_inquiry_param_t *inquery=(void *)data;
+
+    //如果数据长度不等于bl_inquiry_param_t的长度，说明数据包格式错误
+    if(length!=sizeof(bl_inquiry_param_t))
+    {
+        log_w("length mismatch %d!=%d",length,sizeof(bl_inquiry_param_t));
+        bl_response_ack(BL_OP_INQUIRY,BL_ERR_PARAM);
+        return;
+    }
+
+    log_i("subcode:0x%02x",inquery->subcode);
+    //根据subcode调用不同的处理函数
+    switch(inquery->subcode)
+    {
+        //查询Bootloader版本号
+        case BL_INQUIRY_VERSION:
+        {
+            uint8_t version[]={BOOTLOADER_VERSION_MAJOR,BOOTLOADER_VERSION_MINOR};
+            bl_response(BL_OP_INQUIRY,version,sizeof(version));
+            break;
+        }
+        //查询MTU大小
+        case BL_INQUIRY_MTU_SIZE:
+        {
+            uint16_t size=BL_PACKET_PAYLOAD_SIZE;
+            bl_response(BL_OP_INQUIRY,(uint8_t *)&size,sizeof(size));
+            break;
+        }
+        //其它subcode,返回错误
+        default:
+        {
+            bl_response_ack(BL_OP_INQUIRY,BL_ERR_PARAM);
+            break;
+        }
+    }
+}
+
+//直接去引导主程序
+static void bl_op_boot_handler(uint8_t *data,uint16_t length)
+{
+    log_i("boot");
+
+    bl_response_ack(BL_OP_BOOT,BL_ERR_OK);
+
+    //boot_application();
+}
+
+//重启系统
+static void bl_op_reset_handler(uint8_t *data,uint16_t length)
+{
+    log_i("reset");
+
+    bl_response_ack(BL_OP_RESET,BL_ERR_OK);
+
+    NVIC_SystemReset(); //重启系统
+}
+
+static void bl_op_erase_handler(uint8_t *data,uint16_t length)
+{
+    log_i("erase");
+
+    bl_erase_param_t *erase=(void *)data;
+
+    if(length!=sizeof(bl_erase_param_t))
+    {
+        log_w("length mismatch %d!=%d",length,sizeof(bl_erase_param_t));
+        bl_response_ack(BL_OP_ERASE,BL_ERR_PARAM);
+        return;
+    }
+
+    //防止擦除bootloader区域
+    if(erase->address>=FLASH_BOOT_ADDRESS&&erase->address<(FLASH_BOOT_ADDRESS+FLASH_BOOT_SIZE))
+    {
+        log_w("address 0x%08x is protected",erase->address);
+        bl_response_ack(BL_OP_ERASE,BL_ERR_PARAM);
+        return;
+    }
+
+    log_i("erase address:0x%08x,size:%d",erase->address,erase->size);
+
+    //操作flash前需解锁
+    bl_norflash_unclock();
+    bl_norflash_erase(erase->address, erase->size);
+    bl_norflash_clock();
+    
+    bl_response_ack(BL_OP_ERASE,BL_ERR_OK);
+}

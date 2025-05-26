@@ -1,5 +1,6 @@
 {
     "files.associations": {
-        "system_stm32f4xx.h": "c"
+        "system_stm32f4xx.h": "c",
+        "crc32.h": "c"
     }
 }
