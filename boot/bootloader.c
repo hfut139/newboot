@@ -60,7 +60,7 @@
     BL_OP_BOOT=0x11,
     BL_OP_RESET=0x1F,
     BL_OP_ERASE=0x20,
-    BL_OP_READ, //功能未实现
+    BL_OP_READ, //功能无需实现
     BL_OP_WRITE,
     BL_OP_VERIFY,
     BL_OP_END,
@@ -99,7 +99,7 @@
  //数据包接收缓冲器
  typedef struct
  {
-   uint8_t data[16];
+   uint8_t data[16];//这里不建议写成uint16_t,因为uint8_t是单字节对齐，uint16_t是2字节对齐
    uint16_t index; //当前数据长度
  }bl_rx_t;
 
@@ -280,6 +280,175 @@ static void bl_op_erase_handler(uint8_t *data,uint16_t length)
     bl_norflash_unclock();
     bl_norflash_erase(erase->address, erase->size);
     bl_norflash_clock();
-    
+
     bl_response_ack(BL_OP_ERASE,BL_ERR_OK);
+}
+
+//bootloader无需实现read功能
+static void bl_op_read_handler(uint8_t *data,uint16_t length)
+{
+    log_i("read");
+
+    // bl_read_param_t *read=(void *)data;
+
+    // if(length!=sizeof(bl_read_param_t))
+    // {
+    //     log_w("length mismatch %d!=%d",length,sizeof(bl_read_param_t));
+    //     bl_response_ack(BL_OP_READ,BL_ERR_PARAM);
+    //     return;
+    // }
+
+    // log_i("read address:0x%08x,size:%d",read->address,read->size);
+}
+
+//写入数据到flash
+static void bl_op_write_handler(uint8_t *data,uint16_t length)
+{
+    log_i("write");
+
+    bl_write_param_t *write=(void *)data;
+
+    if(length!=sizeof(bl_write_param_t))
+    {
+        log_w("length mismatch %d!=%d",length,sizeof(bl_write_param_t));
+        bl_response_ack(BL_OP_WRITE,BL_ERR_PARAM);
+        return;
+    }
+
+    if(write->address>=FLASH_BOOT_ADDRESS && write->address<(FLASH_BOOT_ADDRESS+FLASH_BOOT_SIZE))
+    {
+        log_w("address 0x%08x is protected",write->address);
+        bl_response_ack(BL_OP_ERASE,BL_ERR_UNKNOWN);
+        return;
+    }
+
+    log_i("write:0x%08x,size:%d",write->address,write->size);
+    bl_norflash_unclock();
+    bl_norflash_write(write->address, write->data, write->size);
+    bl_norflash_clock();
+    bl_response_ack(BL_OP_WRITE,BL_ERR_OK);
+}
+
+static void bl_op_verify_handler(uint8_t *data,uint16_t length)
+{
+    log_i("verity");
+    bl_verify_param_t *verity=(void *)data;
+    if(length!=sizeof(bl_verify_param_t))
+    {
+        log_w("length mismatch %d!=%d",length,sizeof(bl_verify_param_t));
+        bl_response_ack(BL_OP_VERIFY,BL_ERR_PARAM);
+        return;
+    }
+
+    log_i("verity:0x%08x,size:%d",verity->address,verity->size);
+    uint32_t crc=crc32_update(0,verity->address,verity->size);
+
+    log_i("crc:%08x,verity:%08x",crc,verity->crc);
+    if(crc==verity->crc)
+    {
+        bl_response_ack(BL_OP_VERIFY,BL_ERR_OK);
+    }
+    else
+    {
+        bl_response_ack(BL_OP_VERIFY,BL_ERR_VERIFY);
+    }
+}
+
+static void bl_pkt_handler(bl_pkt_t *pkt)
+{
+    log_i("opcode:0x%02x,length:%d",pkt->opcode,pkt->length);
+
+    //根据opcode调用不同的处理函数
+    switch (pkt->opcode)
+    {
+        case BL_OP_INQUIRY:
+            bl_op_inquiry_handler(pkt->param,pkt->length);
+            break;
+        case BL_OP_BOOT:
+            bl_op_boot_handler(pkt->param,pkt->length);
+            break;
+        case BL_OP_RESET:
+            bl_op_reset_handler(pkt->param,pkt->length);
+            break;
+        case BL_OP_ERASE:
+            bl_op_erase_handler(pkt->param,pkt->length);
+            break;
+        case BL_OP_READ:
+            bl_op_read_handler(pkt->param,pkt->length);
+            break;
+        case BL_OP_WRITE:
+            bl_op_write_handler(pkt->param,pkt->length);
+            break;
+        case BL_OP_VERIFY:
+            bl_op_verify_handler(pkt->param,pkt->length);
+            break;
+        default:
+            break;
+    }
+}
+
+static bool bl_pkt_verity(bl_pkt_t *pkt)
+{
+    const uint8_t head=0xAA;
+
+    uint32_t crc=0;
+    crc=crc32_update(crc,(uint8_t *)&head,1);
+    crc=crc32_update(crc,(uint8_t *)&pkt->opcode,1);
+    crc=crc32_update(crc,(uint8_t *)&pkt->length,2);
+    crc=crc32_update(crc,pkt->param,pkt->length);
+
+    return crc==pkt->crc;
+}
+
+static bool bl_recv_handler(bl_ctrl_t *ctrl,uint8_t data)
+{
+    bool fullpkt=false;
+
+    bl_rx_t *rx=&ctrl->rx;
+    bl_pkt_t *pkt=&ctrl->pkt;
+
+    //把接收到的数据放到缓存里面
+    rx->data[rx->index++]=data;
+
+    //根据状态机处理帧内接收阶段
+    switch(ctrl->sm)
+    {
+        //当前处于IDLE模式，等待接收0xAA
+        case BL_SM_IDLE:
+        {
+            log_d("sm idle");
+
+            //不论是否收到0xAA，都将index置为0，以便在状态机切换时，数据缓存器清空
+            rx->index=0;
+            //如果接收到0xAA，则切换到BL_SM_START状态
+            if(rx->data[0]==0xAA)
+            {
+                ctrl->sm=BL_SM_START;
+            }
+            break;
+        }
+        //当前处于start模式，收到opcode
+        case BL_SM_START:
+        {
+            log_d("sm start");
+
+            rx->index=0; //清空数据缓存器
+            pkt->opcode=(bl_op_t)rx->data[0];
+            ctrl->sm=BL_SM_OPCODE;
+            break;
+        }
+        //当前处于opcode模式，收到length
+        case BL_SM_OPCODE:
+        {
+            log_d("sm opcode");
+
+            //因为length是2字节，所以index等于2时，表示length已经接收完毕
+            if(rx->index==2)
+            {
+                rx->index=0;
+                uint16_t length=*(uint16_t *)(rx->data);
+            }
+        }
+
+    }
 }
