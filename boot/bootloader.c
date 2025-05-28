@@ -446,9 +446,87 @@ static bool bl_recv_handler(bl_ctrl_t *ctrl,uint8_t data)
             if(rx->index==2)
             {
                 rx->index=0;
-                uint16_t length=*(uint16_t *)(rx->data);
+                uint16_t length=*(uint16_t *)(rx->data);//data是uint8_t类型的数组，强制转换为uint16_t指针，获取2字节数据
+                //如果length小于等于BL_PACKET_PARAM_SIZE,则表示数据包长度合适
+                if(length<=BL_PACKET_PARAM_SIZE)
+                {
+                    pkt->length=length;
+                    //如果length=0，则表示数据包长度为0，直接进入crc模式
+                    //如果length!=0,则进入PARAM模式接收后续的参数数据
+                    if(length==0)
+                    {
+                        ctrl->sm=BL_SM_CRC;
+                    }
+                    else
+                    {
+                        ctrl->sm=BL_SM_PARAM;
+                    }
+                }
+                else
+                {
+                    //如果length大于BL_PACKET_PARAM_SIZE,则表示数据包长度非法
+                    //告知主机数据发送溢出，并重置状态机
+                    bl_response_ack(pkt->opcode,BL_ERR_OVERFLOW);
+                    bl_reset(ctrl);
+                }
             }
+            break;
         }
+        //当前处于param模式，收到payload
+        case BL_SM_PARAM:
+        {
+            log_d("sm param");
 
+            //复位接收缓冲器，数据直接写入pkt->param中
+            rx->index=0;
+            if(pkt->index<pkt->length)
+            {
+                pkt->param[pkt->index++]=rx->data[0];
+                //param数据接收完毕，进入crc模式
+                if(pkt->index==pkt->length)
+                {
+                    ctrl->sm=BL_SM_CRC;
+                }
+            }
+            else
+            {
+                bl_response_ack(pkt->opcode,BL_ERR_OVERFLOW);
+                bl_reset(ctrl);
+            }
+            break;
+        }
+        case BL_SM_CRC:
+        {
+            log_d("sm crc");
+
+            //crc是4字节，所以index等于4时，表示crc已经接收完毕
+            if(rx->index==4)
+            {
+                rx->index=0;
+                pkt->crc=*(uint32_t *)(rx->data);
+                //校验数据包crc,判断数据包是否异常
+                if(bl_pkt_verity(pkt))
+                {
+                    fullpkt=true; //数据包校验通过，设置fullpkt为true
+                }
+                else
+                {
+                    //数据包crc校验失败，告知主机数据包校验错误，并重置状态机
+                    //此时上位机应重发数据包
+                    log_w("crc mismatch");
+                    bl_response_ack(pkt->opcode,BL_ERR_FORMAT);
+                    bl_reset(ctrl);
+                }
+            }
+            break;
+        }
+        default:
+        {
+            rx->index=0;
+            bl_response_ack(pkt->opcode,BL_ERR_OPCODE);
+            bl_reset(ctrl);
+            break;
+        }
     }
+    return fullpkt;
 }
