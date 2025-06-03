@@ -23,4 +23,5 @@ bool bl_arginfo_read(uint32_t *size,uint32_t *crc)
     {
         *crc=arginfo[2];
     }
+    return true;
 }

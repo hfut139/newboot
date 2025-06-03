@@ -152,8 +152,9 @@ static ringbuffer8_t serial_rb;
 static uint8_t serial_rb_buffer[BL_UART_BUFFER_SIZE];
 static bl_ctrl_t bl_ctrl;
 //上一次接收到数据包的时间，用于数据包接收超时检查
-static uint32_t last_pak_time;
+static uint32_t last_pkt_time;
 
+void boot_application(void);
 
 
 static void serial_recv_callback(uint8_t *data,uint32_t len)
@@ -240,7 +241,7 @@ static void bl_op_boot_handler(uint8_t *data,uint16_t length)
 
     bl_response_ack(BL_OP_BOOT,BL_ERR_OK);
 
-    //boot_application();
+    boot_application();
 }
 
 //重启系统
@@ -529,4 +530,189 @@ static bool bl_recv_handler(bl_ctrl_t *ctrl,uint8_t data)
         }
     }
     return fullpkt;
+}
+
+static void bl_lowlevel_deinit(void)
+{
+#if DEBUG
+    elog_deinit();
+#endif
+
+    bl_uart_deinit();
+
+    SysTick->CTRL=0;
+
+    //停用所有中断
+    //__disable_irq();
+}
+
+#if CONFIG_BOOT_DELAY >0
+static void boot_tim_handler(TimerHandle_t xTimer)
+{
+    static uint32_t count=0;
+    uint32_t timeout =*(uint32_t *)pvTimerGetTimerID(xTimer);
+    if(++count<timeout)
+    {
+        log_i("boot in %d seconds",timeout-count);
+        return;
+    }
+    xTaskNotify(bl_task_handle,BL_EVT_BOOT,eSetBits);
+    xTimerStop(xTimer,0);
+}
+#endif
+
+void bootloader_main(uint32_t boot_delay)
+{
+    //rx_trap 当串口收到数据包，表示在3s等待阶段内，收到上位机数据，不再自动引导主程序
+    bool rx_trap=false;
+    uint32_t main_enter_time=0;
+
+    //注册串口中断数据接收回调
+    bl_uart_recv_register(serial_recv_callback);
+
+    //串口接收数据用的ringbuffer，创建环形缓冲区
+    serial_rb=rb8_new(serial_rb_buffer,BL_UART_BUFFER_SIZE);
+
+    //获取当前时间，用于3s后自动引导主程序
+    //这里不写0，是因为前面有等待用户释放按键的步骤
+    //可能程序运行到这里时，已经过了几秒
+    main_enter_time=bl_now();
+    while(1)
+    {
+        //需要自动引导主程序 且 在3s等待阶段内没有收到上位机数据，则引导主程序
+        if(boot_delay>0&&!rx_trap)
+        {
+            static uint32_t last_time_passed=0;
+            uint32_t time_passed=bl_now()-main_enter_time;
+
+            //第一次进入这个循环时，打印引导时间
+            if(last_time_passed==0)
+            {
+                log_i("boot in %d seconds",boot_delay);
+                last_time_passed=1;
+                time_passed=1;
+            }
+            //每过1s打印一次引导时间
+            else if(time_passed /1000 != last_time_passed /1000)
+            {
+                log_i("boot in %d seconds",boot_delay-(time_passed/1000));
+            }
+
+            //3s时间到，引导主程序
+            if(time_passed>boot_delay*1000)
+            {
+                boot_application(); //跳转到应用程序
+            }
+
+            last_time_passed=time_passed;
+        }
+
+        //检测按键，按键按下，重启系统
+        if(bl_button_pressed())
+        {
+            bl_delay_ms(5);
+            if(bl_button_pressed())
+            {
+                //确认按键按下，先熄灭LED，打印日志，再等待按键释放，最后重启系统
+                bl_led_off();
+                log_i("button pressed,reset");
+
+                //等待按键释放后才执行系统重启，防止再次重启
+                while(bl_button_pressed())
+                {
+                    bl_delay_ms(10);
+                }
+
+                //重启系统
+                NVIC_SystemReset();
+                break;
+            }
+        }
+
+        //如果没有收到数据的场景
+        if(rb8_empty(serial_rb))
+        {
+            //处理接收超时的动作
+            //如果没有接收到串口的数据，则将last_pkt_time置为当前时间
+            if(bl_ctrl.rx.index==0)
+            {
+                last_pkt_time=bl_now();
+            }
+            //如果数据缓存器中有数据，则检查是否超时
+            else
+            {
+               //超时，重置数据缓存器，并打印已接收的数据内容
+               if(bl_now()-last_pkt_time>BL_TIMEOUT_MS)
+               {
+                    log_w("recv timeout");
+                    #if DEBUG
+                    elog_hexdump("recv",16,bl_ctrl.rx.data,bl_ctrl.rx.index);
+                    #endif
+                    bl_reset(&bl_ctrl);
+               }
+            }
+            //因为没有收到数据，不需要继续往下执行数据解析的逻辑
+            continue;
+        } 
+        //从ringbuffer里面读一个字节数据
+        uint8_t data;
+        rb8_get(serial_rb,&data);
+        log_d("recv: %02x",data);
+
+        //将接收到的数据传递给数据处理函数
+        if(bl_recv_handler(&bl_ctrl,data))
+        {
+            //数据处理函数认为数据包已经接收完整，可以进行数据包处理
+            //处理这一帧数据包
+            bl_pkt_handler(&bl_ctrl.pkt);
+            //数据处理完毕，重置数据缓存器
+            bl_reset(&bl_ctrl);
+
+            rx_trap=true;
+            last_pkt_time=bl_now();
+
+        }
+    }
+}
+
+bool verity_application(void)
+{
+    uint32_t size,crc;
+    bool result=bl_arginfo_read(&size,&crc);
+    CHECK_RETX(result,false);
+
+    uint32_t address=FLASH_APP_ADDRESS;
+    uint32_t ccrc=crc32_update(0,(uint8_t *)address,size);
+
+    if(ccrc!=crc)
+    {
+        log_w("crc mismatch: %08x!=%08x",ccrc,crc);
+        return false; //校验失败
+    }
+    return true;
+}
+
+void boot_application(void)
+{
+    typedef int (*entry_t)(void);
+
+    uint32_t address =FLASH_APP_ADDRESS;
+    //ARM Cortex-M 系列芯片的启动文件规定，应用程序的前8字节分别存放：
+    //[0]：初始主堆栈指针（MSP）
+    //[4]：复位向量（即入口函数地址）
+    //这里分别读取这两个值：
+    uint32_t _sp=*(volatile uint32_t *)(address+0); //堆栈指针
+    uint32_t _pc=*(volatile uint32_t *)(address+4); //复位向量
+
+    (void)_sp;
+    entry_t app_entry=(entry_t)_pc;
+
+    log_i("booting application at 0x%08x",address);
+
+    bl_lowlevel_init();
+
+    // __set_MSP(_sp);
+    // SCB->VTOR = address;
+
+    app_entry();
 }
