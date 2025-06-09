@@ -46,7 +46,7 @@ void bl_uart_deinit(void)
     USART_DeInit(USART2);
 }
 
-void bl_uart_write(uint8_t *data,uint16_t size)
+void bl_uart_write(uint8_t *data,uint32_t size)
 {
     USART_ClearFlag(USART2,USART_FLAG_TXE);
     for(int i=0;i<size;i++)

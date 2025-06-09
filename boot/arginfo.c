@@ -3,25 +3,29 @@
 #include "flash_layout.h"
 #include "arginfo.h"
 
-#define ARGINFO_MAGIC 0x1A2B3C4D
+#define ARGINFO_MAGIC   0x1A2B3C4D
 
-bool bl_arginfo_read(uint32_t *size,uint32_t *crc)
+
+bool bl_arginfo_read(uint32_t *size, uint32_t *crc)
 {
-    uint32_t *arginfo =(uint32_t *)FLASH_ARG_ADDRESS;
-    
-    if (arginfo[0]!=ARGINFO_MAGIC)
+    uint32_t *arginfo = (uint32_t *)FLASH_ARG_ADDRESS;
+
+    if (arginfo[0] != ARGINFO_MAGIC)
     {
         return false;
     }
 
-    if(size)
+    // if (size != null)
+    if (size)
     {
-        *size=arginfo[1];
+        *size = arginfo[1];
     }
 
-    if(crc)
+    // if (crc != null)
+    if (crc)
     {
-        *crc=arginfo[2];
+        *crc = arginfo[2];
     }
+
     return true;
 }

@@ -39,7 +39,7 @@ void bl_norflash_unclock(void)
 
 void bl_norflash_clock(void)
 {
-    FLASH_Clock();
+    FLASH_Lock();
 }
 
 void bl_norflash_erase(uint32_t address,uint32_t size)

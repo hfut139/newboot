@@ -24,7 +24,7 @@ endif
 
 # 生成配置
 # DEBUG ?= $(CONFIG_DEBUG)
-DEBUG ?=
+DEBUG ?=y
 V ?=
 
 # Toolchain
@@ -105,7 +105,7 @@ L_FLAGS  = $(MCU)
 L_FLAGS += -T$(LDSCRIPT)
 L_FLAGS += -static -specs=nano.specs
 L_FLAGS += -Wl,-cref
-L_FLAGS += -Wl,-Map=$(BUILD)/$(TARGET).map  # 生成.map文件
+L_FLAGS += -Wl,-Map=$(BUILD)/$(TARGET).map
 L_FLAGS += -Wl,--gc-sections
 L_FLAGS += -Wl,--start-group
 L_FLAGS += $(LIBS)

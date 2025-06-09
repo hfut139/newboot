@@ -86,7 +86,7 @@
  }bl_err_t;
 
  //数据包描述
- typedef struct 
+ typedef struct
  {
     bl_op_t opcode;
     uint16_t length;
@@ -110,7 +110,7 @@
     bl_rx_t rx;
     bl_state_machine_t sm;
  }bl_ctrl_t;
- 
+
 //inquery opcode 的param数据结构
 typedef struct
 {
@@ -175,7 +175,7 @@ static void bl_response(bl_op_t op,uint8_t *data,uint16_t length)
 
     uint32_t crc=0;
     crc=crc32_update(crc,(uint8_t *)&head,1);
-    crc=crc32_update(crc,(uint8_t)&op,1);
+    crc=crc32_update(crc,(uint8_t *)&op,1);
     crc=crc32_update(crc,(uint8_t *)&length,2);
     crc=crc32_update(crc,data,length);
 
@@ -342,7 +342,7 @@ static void bl_op_verify_handler(uint8_t *data,uint16_t length)
     }
 
     log_i("verity:0x%08x,size:%d",verity->address,verity->size);
-    uint32_t crc=crc32_update(0,verity->address,verity->size);
+    uint32_t crc=crc32_update(0,(uint8_t *)verity->address,verity->size);
 
     log_i("crc:%08x,verity:%08x",crc,verity->crc);
     if(crc==verity->crc)
@@ -653,7 +653,7 @@ void bootloader_main(uint32_t boot_delay)
             }
             //因为没有收到数据，不需要继续往下执行数据解析的逻辑
             continue;
-        } 
+        }
         //从ringbuffer里面读一个字节数据
         uint8_t data;
         rb8_get(serial_rb,&data);
@@ -675,20 +675,20 @@ void bootloader_main(uint32_t boot_delay)
     }
 }
 
-bool verity_application(void)
+bool verify_application(void)
 {
-    uint32_t size,crc;
-    bool result=bl_arginfo_read(&size,&crc);
-    CHECK_RETX(result,false);
+    uint32_t size, crc;
+    bool result = bl_arginfo_read(&size, &crc);
+    CHECK_RETX(result, false);
 
-    uint32_t address=FLASH_APP_ADDRESS;
-    uint32_t ccrc=crc32_update(0,(uint8_t *)address,size);
-
-    if(ccrc!=crc)
+    uint32_t address = FLASH_APP_ADDRESS;
+    uint32_t ccrc = crc32_update(0, (uint8_t *)address, size);
+    if (ccrc != crc)
     {
-        log_w("crc mismatch: %08x!=%08x",ccrc,crc);
-        return false; //校验失败
+        log_w("crc mismatch: %08X != %08X", ccrc, crc);
+        return false;
     }
+
     return true;
 }
 
@@ -703,16 +703,18 @@ void boot_application(void)
     //这里分别读取这两个值：
     uint32_t _sp=*(volatile uint32_t *)(address+0); //堆栈指针
     uint32_t _pc=*(volatile uint32_t *)(address+4); //复位向量
-
+ 
     (void)_sp;
     entry_t app_entry=(entry_t)_pc;
 
     log_i("booting application at 0x%08x",address);
 
-    bl_lowlevel_init();
+    //清理bootloader环境
+    bl_lowlevel_deinit();
 
     // __set_MSP(_sp);
     // SCB->VTOR = address;
 
+    // 进入应用程序
     app_entry();
 }

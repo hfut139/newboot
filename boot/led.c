@@ -2,7 +2,7 @@
 #include "stm32f4xx.h"
 #include "led.h"
 
-static bool led_state = false; // LED 状态变量
+static bool led_state; // LED 状态变量
 
 void bl_led_init(void)
 {

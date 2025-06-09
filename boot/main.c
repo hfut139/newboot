@@ -12,7 +12,8 @@
 
 extern void bl_lowlevel_init(void);
 extern void bootloader_main(uint32_t boot_delay);
-extern void boot_application(void);
+extern bool verify_application(void);
+
 
 static bool button_trap_boot(void)
 {
@@ -21,6 +22,7 @@ static bool button_trap_boot(void)
         bl_delay_ms(100);
         return bl_button_pressed();
     }
+
     return false;
 }
 
@@ -52,17 +54,19 @@ int main(void)
     bl_button_init();
     bl_uart_init();
 
-    log_d("button:%d", bl_button_pressed());
+    log_d("button: %d", bl_button_pressed());
 
     bool trap_boot=false;
+    
     if(button_trap_boot())
     {
-        log_i("button pressed,trap into boot");
+        log_w("button pressed,trap into boot");
         trap_boot=true;  //强制进入boot模式
     }
-    else if(!verity_application())
+
+    else if (!verify_application())
     {
-        log_w("application verity failed,trap into boot");
+        log_w("application verify failed,trap into boot");
         trap_boot=true;  //应用程序校验失败，强制进入boot模式
     }
 
